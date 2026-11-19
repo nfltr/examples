@@ -1,0 +1,6 @@
+# The laptop: nfltr up -c laptop.yaml. The model server appears on
+# the laptop's own loopback port; each connection is one session to
+# gpu.gpu/model (agent gpu on machine gpu), end to end encrypted: the laptop is enrolled, so it checks the
+# box's organisation certificate names gpu, and the box checks the laptop's.
+connect:
+  model: { target: gpu.gpu/model, listen: "127.0.0.1:11434" }

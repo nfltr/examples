@@ -1,0 +1,99 @@
+# The app with nfltr (with-nfltr/), the end-to-end test's machines
+# (scripts/test-dotnet-fleet.sh): a private relay, the control plane
+# and three edge agents. No app or sidecar listens on anything but loopback
+# and local sockets. edge-1's agent
+# starts and owns its sidecar; the control plane, edge-2 and edge-3 run the
+# sidecar in its own container beside the app (same network namespace and
+# socket directory), as a service manager would run it beside a service.
+# edge-2 is at a customer site whose only way out is the site's HTTP proxy
+# (site-b-proxy), which allows CONNECT to the relay's two ports and nothing
+# else; its sidecar finds the proxy in HTTPS_PROXY.
+# FLEET_BIN: linux nfltr, nfltr-relay and siteproxy. FLEET_DIR: the sidecar
+# files the script writes and, per machine, its relay certificate
+# (<machine>/machine.json, the account machine named as it joins the organisation)
+# and its organisation enrolment (<machine>/org/machine, written by nfltr
+# org join and its renewals).
+x-image: &image nfltr-dotnet-fleet:with-nfltr
+x-nfltr: &nfltr
+  NFLTR_SERVER: relay:8443              # the relay's gRPC port (nfltr up)
+  HTTP_SERVER_ADDR: https://relay:8444  # its HTTPS port (sessions)
+  NFLTR_RELAY_CERT_SHA256: ${RELAY_PIN:-}
+  RPC_TLS: "true"
+
+services:
+  relay:
+    image: *image
+    command: [/opt/nfltr/nfltr-relay, serve, --data-dir, /var/lib/relay, --tls-self-signed, --tls-name, relay, --agent-rate-limit, "0"]
+    environment: { TCP_ENABLED: "true", RATELIMIT_ENABLE: "false" }
+    volumes: ["${FLEET_BIN}:/opt/nfltr:ro"]
+
+  controlplane-sidecar:
+    image: *image
+    command: [/opt/nfltr/nfltr, up, -c, /run/fleet/controlplane.yaml]
+    environment:
+      <<: *nfltr
+      NFLTR_CONFIG: /run/fleet/controlplane/nfltr.json # its relay certificate and enrolment beside it (org/machine)
+    volumes: ["${FLEET_BIN}:/opt/nfltr:ro", "${FLEET_DIR}:/run/fleet"]
+  controlplane:
+    image: *image
+    network_mode: service:controlplane-sidecar
+    working_dir: /app/controlplane
+    command: [dotnet, ControlPlane.dll, serve]
+    environment:
+      <<: *nfltr
+      NFLTR_SERVER: relay:8444          # nfltr cat pipe: the relay's HTTPS port
+      NFLTR_CONFIG: /run/fleet/controlplane/nfltr.json
+      Fleet__Nfltr: /opt/nfltr/nfltr
+      Fleet__Agents__edge-3__Plain: "true" # edge-3's execute is not end-to-end encrypted
+    volumes: ["${FLEET_BIN}:/opt/nfltr:ro", "${FLEET_DIR}:/run/fleet"]
+
+  edge-1: # the agent owns its sidecar (--Sidecar)
+    image: *image
+    init: true
+    working_dir: /app/agent
+    command: [dotnet, Agent.dll, --Name, edge-1, --Sidecar, /run/fleet/edge-1.yaml, --Nfltr, /opt/nfltr/nfltr]
+    environment:
+      <<: *nfltr
+      NFLTR_CONFIG: /run/fleet/edge-1/nfltr.json
+    volumes: ["${FLEET_BIN}:/opt/nfltr:ro", "${FLEET_DIR}:/run/fleet"]
+
+  site-b-proxy: # edge-2's site: CONNECT to the relay only
+    image: *image
+    command: [/opt/nfltr/siteproxy, -allow, "relay:8443,relay:8444"]
+    volumes: ["${FLEET_BIN}:/opt/nfltr:ro"]
+    networks: [default, site-b]
+  edge-2-sidecar:
+    image: *image
+    command: [/opt/nfltr/nfltr, up, -c, /run/fleet/edge-2.yaml]
+    networks: [site-b]
+    environment:
+      <<: *nfltr
+      HTTPS_PROXY: http://site-b-proxy:3128
+      NFLTR_CONFIG: /run/fleet/edge-2/nfltr.json
+    volumes: ["${FLEET_BIN}:/opt/nfltr:ro", "${FLEET_DIR}:/run/fleet", "edge-2-run:/run/nfltr"]
+  edge-2:
+    image: *image
+    network_mode: service:edge-2-sidecar
+    working_dir: /app/agent
+    command: [dotnet, Agent.dll, --Name, edge-2]
+    volumes: ["edge-2-run:/run/nfltr"]
+
+  edge-3-sidecar: # execute is not end-to-end encrypted (e2ee: false)
+    image: *image
+    command: [/opt/nfltr/nfltr, up, -c, /run/fleet/edge-3.yaml]
+    environment:
+      <<: *nfltr
+      NFLTR_CONFIG: /run/fleet/edge-3/nfltr.json
+    volumes: ["${FLEET_BIN}:/opt/nfltr:ro", "${FLEET_DIR}:/run/fleet", "edge-3-run:/run/nfltr"]
+  edge-3:
+    image: *image
+    network_mode: service:edge-3-sidecar
+    working_dir: /app/agent
+    command: [dotnet, Agent.dll, --Name, edge-3]
+    volumes: ["edge-3-run:/run/nfltr"]
+
+networks:
+  site-b: { internal: true } # no route out but the proxy
+volumes:
+  edge-2-run:
+  edge-3-run:

@@ -1,0 +1,17 @@
+# The sidecar of edge agent edge-1: nfltr up -c edge-agent.yaml
+# One file per agent (provisioning writes the agent's name).
+# Environment: NFLTR_CONFIG (the config dir holding this machine's relay
+# certificate, from nfltr config login or set-relay --code-file -, and its
+# organisation enrolment: nfltr org join as edge-1, in group edge; see
+# MIGRATION.md "Organisation").
+agent: edge-1
+services:
+  # (a) Agent.Execute: the agent's gRPC server on loopback port 50051,
+  # reachable as edge-1.edge-1/execute. No inbound port: the sidecar dials out.
+  # Served only to the organisation's machines of group controlplane.
+  execute: { tcp: 50051, e2ee: true, allow_group: [controlplane] }
+connect:
+  # (b) Fleet.Session: the control plane on a local socket only this user
+  # can open. Windows: listen: "pipe:nfltr-fleet" (named pipe, this user).
+  fleet: { target: controlplane.controlplane/fleet, listen: "unix:/run/nfltr/fleet.sock" }
+status: "unix:/run/nfltr/status.sock"

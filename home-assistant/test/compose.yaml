@@ -1,0 +1,94 @@
+# The Home Assistant example's machines (scripts/test-home-assistant.sh,
+# README.md). home: the machine at home that runs Home Assistant (out
+# through the router only; nothing from outside reaches it). router: the home router, NAT out to the internet. visitor: the
+# phone or laptop away from home, on the internet. Programs of a machine
+# run in its network namespace (network_mode: service:home), so each can be
+# stopped and started on its own.
+# relay: a private relay on the internet (the stand-in for the hosted
+# relay). agent: nfltr up at home (nfltr/home.yaml).
+# HA_BIN: linux binaries. HA_RUN: the run's files (Home Assistant's
+# /config, certificates, the relay's key and pins).
+x-base: &base
+  image: ${HA_IMAGE_LOCAL}
+  init: true
+  volumes: ["${HA_BIN}:/opt/ha:ro", "${HA_RUN}:/run/ha", "..:/opt/ex:ro"]
+
+networks:
+  home: # not internal: Docker drops an internal network's packets to or from other subnets
+    ipam: { config: [{ subnet: 10.236.1.0/24 }] }
+  internet:
+    ipam: { config: [{ subnet: 10.236.2.0/24 }] }
+
+services:
+  router:
+    <<: *base
+    cap_add: [NET_ADMIN]
+    sysctls: { net.ipv4.ip_forward: "1" }
+    networks:
+      home: { ipv4_address: 10.236.1.2 }
+      internet: { ipv4_address: 10.236.2.2 } # the home's public IP
+    command:
+      - sh
+      - -euc
+      - |
+        out=$$(ip -o -4 addr show | awk '/ 10\.236\.2\.2\//{print $$2}')
+        iptables -t nat -A POSTROUTING -o "$$out" -j MASQUERADE
+        iptables -P FORWARD DROP
+        iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+        iptables -A FORWARD -s 10.236.1.0/24 -o "$$out" -j ACCEPT
+        touch /tmp/ready
+        exec tail -f /dev/null
+  home:
+    <<: *base
+    cap_add: [NET_ADMIN]
+    networks: { home: { ipv4_address: 10.236.1.10 } }
+    # Out through the router only. In: the Docker host routes between its
+    # networks, so the home machine drops new connections from anywhere but
+    # the router.
+    command:
+      - sh
+      - -euc
+      - |
+        ip route replace default via 10.236.1.2
+        iptables -A INPUT -m conntrack --ctstate NEW ! -i lo ! -s 10.236.1.2 -j DROP
+        touch /tmp/ready
+        exec tail -f /dev/null
+  visitor:
+    <<: *base
+    networks: { internet: { ipv4_address: 10.236.2.30 } }
+    command: [tail, -f, /dev/null]
+
+  homeassistant:
+    image: ${HA_IMAGE}
+    network_mode: service:home
+    volumes: ["${HA_RUN}/config:/config"]
+    environment: { TZ: UTC }
+
+  relay:
+    <<: *base
+    networks: { internet: { ipv4_address: 10.236.2.10 } }
+    command: [/opt/ha/nfltr-relay, serve, --data-dir, /var/lib/relay, --tls-self-signed, --tls-name, relay, --agent-rate-limit, "0"]
+    environment:
+      TCP_ENABLED: "true"
+      RATELIMIT_ENABLE: "false"
+      HTTP_SHARE_DOMAIN: share.test
+      E2EE_TLS_PASSTHROUGH_ENABLED: "true"
+      E2EE_TLS_PASSTHROUGH_BASE_DOMAIN: share.test
+  agent:
+    <<: *base
+    network_mode: service:home
+    command: [/opt/ha/nfltr, up, -c, /opt/ex/nfltr/home.yaml]
+    environment:
+      # The relay: self-hosted here; with the hosted relay `nfltr config login`
+      # sets the address and the machine's certificate instead; here the
+      # certificate comes from a single-use code (nfltr config set-relay).
+      NFLTR_SERVER: 10.236.2.10:8443
+      HTTP_SERVER_ADDR: https://10.236.2.10:8444
+      RPC_TLS: "true"
+      NFLTR_RELAY_CERT_SHA256: ${RELAY_PIN:-}
+      # The link's certificate. With the hosted relay the agent gets one
+      # from Let's Encrypt for the link's host name; here a self-signed one
+      # for *.share.test that the visitor pins stands in.
+      NFLTR_E2EE_CERT: /run/ha/agent/link.crt
+      NFLTR_E2EE_KEY: /run/ha/agent/link.key
+      HOME: /run/ha/agent/home

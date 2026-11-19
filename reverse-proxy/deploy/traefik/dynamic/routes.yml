@@ -1,0 +1,23 @@
+# The routes, the login and the services (home names, plain HTTP on loopback).
+http:
+  routers:
+    app:
+      rule: Host(`app.home.arpa`)
+      entryPoints: [web]
+      service: photos
+    app-api:
+      rule: Host(`app.home.arpa`) && PathPrefix(`/api/`)
+      entryPoints: [web]
+      service: api
+    admin:
+      rule: Host(`admin.home.arpa`)
+      entryPoints: [web]
+      middlewares: [admin-login]
+      service: admin
+  middlewares:
+    admin-login:
+      basicAuth: { usersFile: /etc/traefik/users, headerField: X-Auth-User }
+  services:
+    photos: { loadBalancer: { servers: [{ url: "http://127.0.0.1:9001" }] } }
+    api: { loadBalancer: { servers: [{ url: "http://127.0.0.1:9002" }] } }
+    admin: { loadBalancer: { servers: [{ url: "http://127.0.0.1:9003" }] } }

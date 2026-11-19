@@ -1,0 +1,11 @@
+# The internet's DNS as the test's Pi-hole sees it upstream (CoreDNS): every
+# name has the A record 192.0.2.10 (ad domains too, so a blocked answer can
+# only come from Pi-hole) and no other records.
+.:53 {
+    template IN A {
+        answer "{{ .Name }} 300 IN A 192.0.2.10"
+    }
+    template ANY ANY {
+        rcode NOERROR
+    }
+}

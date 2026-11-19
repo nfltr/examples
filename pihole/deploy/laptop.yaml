@@ -1,0 +1,8 @@
+# The laptop: nfltr up -c laptop.yaml. Pi-hole's DNS appears on the
+# laptop's 127.0.0.1:5353 (TCP) and its web interface on 127.0.0.1:8080;
+# each connection is one session to agent pihole on machine pihole
+# (<machine>.<agent>/<service>), end to end encrypted: the laptop is
+# enrolled, so it checks the box's organisation certificate names pihole.
+connect:
+  dns: { target: pihole.pihole/dns, listen: "127.0.0.1:5353" }
+  web: { target: pihole.pihole/web, listen: "127.0.0.1:8080" }

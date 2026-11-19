@@ -1,0 +1,15 @@
+# The gateway: nfltr up -c gateway.yaml on a Linux box on the device's LAN.
+# The device (10.247.1.50) runs nothing of nfltr. Each service is one port
+# of the device: the gateway dials only these targets, so the device's
+# other ports (its maintenance port 23) stay unreachable. ui, sensor and
+# coap are end to end encrypted to the gateway (it joined the organisation
+# with nfltr org join) and served only to machines of group ops, reached
+# as gw.plant/<service> (machine gw, agent plant). ui-link is the same web
+# UI under a capability address (nf1...): whoever holds the address opens
+# it, end to end encrypted, with no account.
+agent: plant
+services:
+  ui:      { tcp: 80,   forward: "10.247.1.50:80",   e2ee: true, allow_group: [ops] }
+  sensor:  { tcp: 7,    forward: "10.247.1.50:7",    e2ee: true, allow_group: [ops] }
+  coap:    { udp: 5683, forward: "10.247.1.50:5683", e2ee: true, allow_group: [ops] }
+  ui-link: { tcp: 80,   forward: "10.247.1.50:80",   address: true }

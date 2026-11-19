@@ -1,0 +1,84 @@
+# The example's machines (scripts/test-gpu-box.sh, README.md).
+# box: the GPU box on the home network (out through the router only, no
+# way in). router: the home router, NAT out,
+# 10 ms each way between home and the outside (tc netem). laptop: a machine
+# elsewhere. Programs run in their machine's network namespace
+# (network_mode: service:box|laptop), so one can be killed and started
+# without the machine's network.
+# relay, box-agent, laptop-agent: a private relay outside, nfltr up on both
+# machines (deploy/). GB_BIN: linux binaries. GB_PROV: the provisioned
+# files, box/ and laptop/.
+x-base: &base
+  image: ${GB_IMAGE}
+  init: true
+  volumes: ["${GB_BIN}:/opt/gb:ro"]
+
+networks:
+  home: # not internal: Docker drops an internal network's packets to or from other subnets, so the router could not route it
+    ipam: { config: [{ subnet: 10.232.1.0/24 }] }
+  outside:
+    ipam: { config: [{ subnet: 10.232.2.0/24 }] }
+
+services:
+  router:
+    <<: *base
+    cap_add: [NET_ADMIN]
+    sysctls: { net.ipv4.ip_forward: "1" }
+    networks:
+      home: { ipv4_address: 10.232.1.2 }
+      outside: { ipv4_address: 10.232.2.2 }
+    command:
+      - sh
+      - -euc
+      - |
+        out=$$(ip -o -4 addr show | awk '/ 10\.232\.2\.2\//{print $$2}')
+        in=$$(ip -o -4 addr show | awk '/ 10\.232\.1\.2\//{print $$2}')
+        iptables -t nat -A POSTROUTING -o "$$out" -j MASQUERADE
+        iptables -P FORWARD DROP
+        iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+        iptables -A FORWARD -s 10.232.1.0/24 -o "$$out" -j ACCEPT
+        tc qdisc add dev "$$out" root netem delay 10ms
+        tc qdisc add dev "$$in" root netem delay 10ms
+        touch /tmp/ready
+        exec tail -f /dev/null
+  box:
+    <<: *base
+    cap_add: [NET_ADMIN]
+    networks: { home: { ipv4_address: 10.232.1.10 } }
+    # Out through the router only; new connections from anywhere but the
+    # router dropped (the Docker host would otherwise route to it).
+    command:
+      - sh
+      - -euc
+      - |
+        ip route replace default via 10.232.1.2
+        iptables -A INPUT -m conntrack --ctstate NEW ! -i lo ! -s 10.232.1.2 -j DROP
+        touch /tmp/ready
+        exec tail -f /dev/null
+  laptop:
+    <<: *base
+    volumes: ["${GB_BIN}:/opt/gb:ro", "${GB_PROV}/laptop:/run/gb:ro"]
+    networks: { outside: { ipv4_address: 10.232.2.20 } }
+    command: [tail, -f, /dev/null]
+  model:
+    <<: *base
+    network_mode: service:box
+    command: [/opt/gb/model]
+
+  relay:
+    <<: *base
+    networks: { outside: { ipv4_address: 10.232.2.10 } }
+    command: [/opt/gb/nfltr-relay, serve, --data-dir, /var/lib/relay, --tls-self-signed, --tls-name, relay, --agent-rate-limit, "0"]
+    environment: { TCP_ENABLED: "true", RATELIMIT_ENABLE: "false" }
+  box-agent:
+    <<: *base
+    network_mode: service:box
+    volumes: ["${GB_BIN}:/opt/gb:ro", "${GB_PROV}/box:/run/gb", "../deploy:/opt/gb-cfg:ro"]
+    env_file: [../deploy/relay.env, ../deploy/box.env]
+    command: [/opt/gb/nfltr, up, -c, /opt/gb-cfg/box.yaml]
+  laptop-agent:
+    <<: *base
+    network_mode: service:laptop
+    volumes: ["${GB_BIN}:/opt/gb:ro", "${GB_PROV}/laptop:/run/gb", "../deploy:/opt/gb-cfg:ro"]
+    env_file: [../deploy/relay.env, ../deploy/laptop.env]
+    command: [/opt/gb/nfltr, up, -c, /opt/gb-cfg/laptop.yaml]

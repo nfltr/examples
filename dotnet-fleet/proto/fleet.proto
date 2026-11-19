@@ -1,0 +1,70 @@
+// The fleet's command protocol, both shapes; an application often has
+// one of them already. Adding the nfltr connect sidecar changes neither
+// the protocol nor the generated stubs.
+syntax = "proto3";
+
+package fleet.v1;
+
+option csharp_namespace = "FleetApi";
+
+// (a) Control plane -> agent. Each edge agent serves Agent on a loopback
+// port; its sidecar publishes that port as <agent>/execute (no inbound
+// port). The control plane reaches a chosen agent by name through a
+// connect: mapping or one `nfltr cat pipe` per connection.
+service Agent {
+  rpc Execute(Command) returns (stream Update);
+}
+
+// (b) Agent -> control plane. The agent opens one long-lived session
+// through its sidecar's connect: mapping to controlplane/fleet; commands
+// flow down and updates flow up on the same stream.
+service Fleet {
+  rpc Session(stream AgentMessage) returns (stream ControlMessage);
+}
+
+message Command {
+  string id = 1;
+  string action = 2;
+  int32 steps = 3;     // progress updates before the result
+  int32 step_ms = 4;   // work per step
+}
+
+message Progress {
+  int32 step = 1;
+  int32 percent = 2;
+}
+
+message Result {
+  bool ok = 1;
+  string output = 2;
+}
+
+message Update {
+  string command_id = 1;
+  oneof kind {
+    Progress progress = 2;
+    Result result = 3;
+  }
+}
+
+message Hello {
+  string agent = 1;
+}
+
+message Cancel {
+  string command_id = 1;
+}
+
+message AgentMessage {
+  oneof kind {
+    Hello hello = 1;
+    Update update = 2;
+  }
+}
+
+message ControlMessage {
+  oneof kind {
+    Command command = 1;
+    Cancel cancel = 2;
+  }
+}

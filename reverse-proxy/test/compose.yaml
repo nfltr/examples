@@ -1,0 +1,102 @@
+# The reverse-proxy example's machines (scripts/test-reverse-proxy.sh,
+# README.md). server: the home server that runs the proxy and the services
+# behind it (out through the router only). router: the home router, NAT
+# out, 10 ms each way between home and the internet. visitor: a browser
+# or app on the internet. A machine's programs run in its network
+# namespace (network_mode: service:server), so each can be killed and
+# started on its own.
+# Profiles: caddy or traefik (the proxy, its configuration from
+# RP_RUN/proxy, copied from deploy/). relay: a private relay standing in for
+# the hosted one; agent: nfltr up on the server.
+# RP_BIN: linux binaries. RP_RUN: the arm's files (proxy configuration,
+# certificates, keys).
+x-base: &base
+  image: ${RP_IMAGE}
+  init: true
+  volumes: ["${RP_BIN}:/opt/rp:ro", "${RP_RUN}:/run/rp:ro"]
+
+networks:
+  home:
+    driver: macvlan
+    internal: true
+    ipam: { config: [{ subnet: 10.234.1.0/24 }] }
+  internet:
+    ipam: { config: [{ subnet: 10.234.2.0/24 }] }
+
+services:
+  router:
+    <<: *base
+    cap_add: [NET_ADMIN]
+    sysctls: { net.ipv4.ip_forward: "1" }
+    networks:
+      home: { ipv4_address: 10.234.1.2 }
+      internet: { ipv4_address: 10.234.2.2 } # the home's public IP address
+    command:
+      - sh
+      - -euc
+      - |
+        out=$$(ip -o -4 addr show | awk '/ 10\.234\.2\.2\//{print $$2}')
+        in=$$(ip -o -4 addr show | awk '/ 10\.234\.1\.2\//{print $$2}')
+        iptables -t nat -A POSTROUTING -o "$$out" -j MASQUERADE
+        iptables -P FORWARD DROP
+        iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+        # Out to the test's internet only.
+        iptables -A FORWARD -s 10.234.1.0/24 -d 10.234.2.0/24 -o "$$out" -j ACCEPT
+        tc qdisc add dev "$$out" root netem delay 10ms
+        tc qdisc add dev "$$in" root netem delay 10ms
+        touch /tmp/ready
+        exec tail -f /dev/null
+  server:
+    <<: *base
+    cap_add: [NET_ADMIN]
+    networks: { home: { ipv4_address: 10.234.1.10 } }
+    command: [sh, -euc, "ip route replace default via 10.234.1.2; touch /tmp/ready; exec tail -f /dev/null"]
+  visitor:
+    <<: *base
+    networks: { internet: { ipv4_address: 10.234.2.30 } }
+    command: [tail, -f, /dev/null]
+  services: # the three services behind the proxy, on loopback (svc/)
+    <<: *base
+    network_mode: service:server
+    command: [/opt/rp/svc, 127.0.0.1:9001=photos, 127.0.0.1:9002=api, 127.0.0.1:9003=admin]
+
+  caddy:
+    image: ${CADDY_IMAGE}
+    profiles: [caddy]
+    network_mode: service:server
+    env_file: ["${RP_RUN}/caddy.env"]
+    volumes: ["${RP_RUN}/proxy:/etc/caddy:ro"]
+  traefik:
+    image: ${TRAEFIK_IMAGE}
+    profiles: [traefik]
+    network_mode: service:server
+    volumes: ["${RP_RUN}/proxy:/etc/traefik:ro"]
+
+  relay:
+    <<: *base
+    networks: { internet: { ipv4_address: 10.234.2.10 } }
+    command: [/opt/rp/nfltr-relay, serve, --data-dir, /var/lib/relay, --tls-self-signed, --tls-name, relay, --agent-rate-limit, "0"]
+    environment:
+      RATELIMIT_ENABLE: "false"
+      HTTP_SHARE_DOMAIN: share.test
+      E2EE_TLS_PASSTHROUGH_ENABLED: "true"
+      E2EE_TLS_PASSTHROUGH_BASE_DOMAIN: share.test
+  agent:
+    <<: *base
+    network_mode: service:server
+    volumes: ["${RP_BIN}:/opt/rp:ro", "${RP_RUN}:/run/rp", "../deploy:/opt/rp-deploy:ro", "../deploy/hosts:/etc/hosts:ro"]
+    command: [/opt/rp/nfltr, up, -c, /opt/rp-deploy/nfltr.yaml]
+    environment:
+      # The relay: self-hosted here; with the hosted relay `nfltr config login`
+      # sets the address and the machine's certificate instead; here the
+      # certificate comes from a single-use code (nfltr config set-relay).
+      NFLTR_SERVER: 10.234.2.10:8443
+      HTTP_SERVER_ADDR: https://10.234.2.10:8444
+      RPC_TLS: "true"
+      NFLTR_RELAY_CERT_SHA256: ${RELAY_PIN:-}
+      # The links' certificate. With the hosted relay the agent gets one
+      # from Let's Encrypt for each link's host name; here a self-signed one
+      # for *.share.test that the visitor trusts stands in.
+      NFLTR_E2EE_CERT: /run/rp/link.crt
+      NFLTR_E2EE_KEY: /run/rp/link.key
+      HOME: /run/rp/home

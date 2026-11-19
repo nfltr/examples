@@ -1,0 +1,29 @@
+# nfltr up on this server ends the visitors' TLS and hands Caddy
+# plain HTTP on loopback, with the Host it routes on and the visitor's
+# address in X-Forwarded-For. Caddy keeps the routes, the login and the
+# headers; it listens on loopback only and holds no certificates.
+{
+	auto_https off
+	default_bind 127.0.0.1
+	servers {
+		trusted_proxies static 127.0.0.1/32
+	}
+}
+
+http://app.home.arpa {
+	handle /api/* {
+		reverse_proxy 127.0.0.1:9002
+	}
+	handle {
+		reverse_proxy 127.0.0.1:9001
+	}
+}
+
+http://admin.home.arpa {
+	basic_auth {
+		owner {$ADMIN_HASH}
+	}
+	reverse_proxy 127.0.0.1:9003 {
+		header_up X-Auth-User {http.auth.user.id}
+	}
+}

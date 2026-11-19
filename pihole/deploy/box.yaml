@@ -1,0 +1,9 @@
+# The box: nfltr up -c box.yaml. It dials out to the relay and
+# publishes Pi-hole's DNS over TCP and its web interface as pihole/dns and
+# pihole/web, end to end encrypted (the relay carries TLS records only), to
+# the machines of the organisation's group home only (the box enrolled as
+# pihole: nfltr org join).
+agent: pihole
+services:
+  dns: { tcp: 53, e2ee: true, allow_group: [home] }
+  web: { tcp: 80, e2ee: true, allow_group: [home] }

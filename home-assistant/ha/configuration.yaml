@@ -1,0 +1,10 @@
+# Home Assistant's configuration.yaml at home. default_config is what a new
+# install writes. Home Assistant refuses a request that names a forwarded
+# client (X-Forwarded-For) unless it comes from a trusted proxy: nfltr up
+# runs on the same machine and forwards from loopback.
+default_config:
+http:
+  use_x_forwarded_for: true
+  trusted_proxies:
+    - 127.0.0.1
+    - "::1"

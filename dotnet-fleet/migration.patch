@@ -1,0 +1,554 @@
+diff --git a/with-nfltr/agent/OwnedSidecar.cs b/with-nfltr/agent/OwnedSidecar.cs
+new file mode 100644
+index 0000000..757bcbd
+--- /dev/null
++++ b/with-nfltr/agent/OwnedSidecar.cs
+@@ -0,0 +1,25 @@
++// Optional: the agent starts `nfltr up -c <file>` itself and owns it. It
++// dies with this process (--exit-with-parent, and a Job Object on Windows);
++// when it exits, this process stops too and the service manager restarts
++// both. Call Start from the main thread, which lives as long as the
++// process: Linux delivers nfltr's parent-death signal when the *thread*
++// that started it exits.
++using System.Diagnostics;
++
++static class OwnedSidecar
++{
++    public static void Start(WebApplication app, string file, string nfltr)
++    {
++        var psi = new ProcessStartInfo(nfltr) { UseShellExecute = false };
++        foreach (var a in new[] { "up", "-c", file, "--exit-with-parent", "--log-format", "json" }) psi.ArgumentList.Add(a);
++        var sidecar = Process.Start(psi)!; // stdout/stderr: this process's, so one log has both
++        if (OperatingSystem.IsWindows()) Job.KillOnClose(sidecar);
++        sidecar.EnableRaisingEvents = true;
++        sidecar.Exited += (_, _) =>
++        {
++            app.Logger.LogError("sidecar exited with {Code}", sidecar.ExitCode);
++            Environment.ExitCode = 1;
++            app.Lifetime.StopApplication();
++        };
++    }
++}
+diff --git a/app/agent/Program.cs b/with-nfltr/agent/Program.cs
+index 925cd90..a42c045 100644
+--- a/app/agent/Program.cs
++++ b/with-nfltr/agent/Program.cs
+@@ -1,18 +1,26 @@
+-// Edge agent: a worker service that
+-// keeps one Fleet.Session open to the control plane's public TLS endpoint.
+-// It has no server: behind NAT nothing can reach it, so commands arrive
+-// only over the session it opens.
++// Edge agent on the nfltr connect sidecar: keeps one Fleet.Session open to
++// the control plane through the sidecar's local endpoint, and serves
++// Agent.Execute on loopback, which the sidecar publishes as <name>/execute
++// (no inbound port: the sidecar dials out).
+ //
+-//   Agent --Name edge-1 [--ControlPlane:Url https://controlplane.fleet.example:8443]
++//   Agent --Name edge-1 [--ControlPlane unix:/run/nfltr/fleet.sock]
++//         [--Sidecar /etc/fleet/edge-1.yaml] [--Nfltr /opt/nfltr/nfltr]
+ //
+-// ControlPlane (appsettings.json): Url, CaCertificate (the fleet's private
+-// CA), ServerName (the name on the control plane's certificate when the
+-// URL's host differs), the HTTP/2 keepalive and connect timeout.
++// ControlPlane: the sidecar's endpoint for controlplane/fleet: unix:<path>,
++// pipe:<name> (Windows) or 127.0.0.1:<port>. Execute's loopback listener:
++// appsettings.json ("Kestrel"). --Sidecar: this process starts and owns
++// its sidecar (OwnedSidecar.cs); without it the service manager runs the
++// sidecar beside this process.
+ using Grpc.Net.Client;
+ 
+-var builder = Host.CreateApplicationBuilder(args);
++var builder = WebApplication.CreateBuilder(args);
+ var name = builder.Configuration["Name"] ?? throw new ArgumentException("--Name is required");
+ builder.Services.AddSingleton(sp => new Worker(name, sp.GetRequiredService<ILogger<Worker>>()));
+-builder.Services.AddSingleton<GrpcChannel>(ControlPlaneChannel.For(builder.Configuration.GetSection("ControlPlane")));
++builder.Services.AddSingleton<GrpcChannel>(SidecarChannel.For(builder.Configuration["ControlPlane"] ?? throw new ArgumentException("--ControlPlane is required")));
+ builder.Services.AddHostedService<SessionLoop>();
+-builder.Build().Run();
++builder.Services.AddGrpc();
++var app = builder.Build();
++app.MapGrpcService<AgentService>();
++if (builder.Configuration["Sidecar"] is { } file)
++    OwnedSidecar.Start(app, file, builder.Configuration["Nfltr"] ?? "nfltr");
++app.Run();
+diff --git a/app/agent/appsettings.json b/with-nfltr/agent/appsettings.json
+index fcfc23f..87c322f 100644
+--- a/app/agent/appsettings.json
++++ b/with-nfltr/agent/appsettings.json
+@@ -1,11 +1,8 @@
+ {
+-  "ControlPlane": {
+-    "Url": "https://controlplane.fleet.example:8443",
+-    "CaCertificate": "/etc/fleet/tls/ca.crt",
+-    "ServerName": "",
+-    "Proxy": "",
+-    "ConnectTimeout": "00:00:10",
+-    "KeepAlivePingDelay": "00:00:20",
+-    "KeepAlivePingTimeout": "00:00:10"
++  "ControlPlane": "unix:/run/nfltr/fleet.sock",
++  "Kestrel": {
++    "Endpoints": {
++      "Execute": { "Url": "http://127.0.0.1:50051", "Protocols": "Http2" }
++    }
+   }
+ }
+diff --git a/with-nfltr/controlplane/AgentChannels.cs b/with-nfltr/controlplane/AgentChannels.cs
+new file mode 100644
+index 0000000..50322f7
+--- /dev/null
++++ b/with-nfltr/controlplane/AgentChannels.cs
+@@ -0,0 +1,16 @@
++// Optional, new with the sidecar: shape (a), a channel to one agent by
++// name. Configuration (appsettings.json, environment):
++//   Fleet:Agents:<name>:Mapping  the sidecar's local endpoint for <name>.<name>/execute
++//   Fleet:Agents:<name>:Plain    true: `nfltr cat pipe --plain` (a service not end-to-end encrypted)
++//   Fleet:Nfltr                  the nfltr binary (default: nfltr on PATH)
++using Grpc.Core;
++
++static class AgentChannels
++{
++    public static AgentChannel For(IConfiguration cfg) => (via, agent) => via switch
++    {
++        "mapping" => SidecarChannel.For(cfg[$"Fleet:Agents:{agent}:Mapping"] ?? throw new RpcException(new Status(StatusCode.NotFound, $"no mapping for {agent}"))),
++        "dial" => DialChannel.For($"{agent}.{agent}/execute", cfg.GetValue<bool>($"Fleet:Agents:{agent}:Plain"), cfg["Fleet:Nfltr"] ?? "nfltr"),
++        _ => throw new RpcException(new Status(StatusCode.InvalidArgument, $"via {via}: want mapping, dial or session")),
++    };
++}
+diff --git a/app/controlplane/Program.cs b/with-nfltr/controlplane/Program.cs
+index 0d436f8..2ff7402 100644
+--- a/app/controlplane/Program.cs
++++ b/with-nfltr/controlplane/Program.cs
+@@ -1,22 +1,25 @@
+-// Control plane. Serves Fleet.Session (shape b: agents connect in) and
+-// dispatches commands to agents over their open sessions.
++// Control plane. Serves Fleet.Session (shape b: agents connect in through
++// their sidecars) and dispatches commands to agents over their open
++// sessions, or (shape a) by calling Agent.Execute on a chosen agent through
++// a connect: mapping or an `nfltr cat pipe` child (AgentChannels.cs).
+ //
+ //   ControlPlane serve      Fleet and POST /dispatch on the endpoints of
+ //                           appsettings.json ("Kestrel")
+-//   ControlPlane dispatch --via session --agents edge-1,edge-2
++//   ControlPlane dispatch --via mapping|dial|session --agents edge-1,edge-2
+ //                         [--steps 5] [--step-ms 100] [--deadline-ms 0]
+ //                         [--expect ok] [--retry-s 0]
+-//   ControlPlane bench --via session --agents edge-1,edge-3 [--n 50]
++//   ControlPlane bench --via mapping --agents edge-1,edge-3 [--n 50]
+ //
+-// Kestrel's endpoints come from appsettings.json: Fleet, gRPC over TLS on a
+-// public port with the control plane's certificate and HTTP/2 keepalive;
+-// Admin, the operator API on loopback.
++// Kestrel's endpoints come from appsettings.json: Fleet, gRPC on loopback,
++// published by the sidecar as controlplane/fleet; Admin, the operator API
++// on loopback.
+ if (args.Length > 0 && args[0] is "dispatch" or "bench")
+     return await Cli.Run(args[0], new ConfigurationBuilder().AddCommandLine(args[1..]).Build());
+ 
+ var builder = WebApplication.CreateBuilder(args);
+ builder.Services.AddGrpc();
+ builder.Services.AddSingleton<Sessions>();
++builder.Services.AddSingleton(sp => AgentChannels.For(sp.GetRequiredService<IConfiguration>()));
+ builder.Services.AddSingleton<Dispatcher>();
+ var app = builder.Build();
+ app.MapGrpcService<FleetService>();
+diff --git a/app/controlplane/appsettings.json b/with-nfltr/controlplane/appsettings.json
+index 0290885..157c90f 100644
+--- a/app/controlplane/appsettings.json
++++ b/with-nfltr/controlplane/appsettings.json
+@@ -1,18 +1,15 @@
+ {
+   "Kestrel": {
+     "Endpoints": {
+-      "Fleet": {
+-        "Url": "https://0.0.0.0:8443",
+-        "Protocols": "Http2",
+-        "Certificate": {
+-          "Path": "/etc/fleet/tls/controlplane.crt",
+-          "KeyPath": "/etc/fleet/tls/controlplane.key"
+-        }
+-      },
++      "Fleet": { "Url": "http://127.0.0.1:5000", "Protocols": "Http2" },
+       "Admin": { "Url": "http://127.0.0.1:5080", "Protocols": "Http1" }
+-    },
+-    "Limits": {
+-      "Http2": { "KeepAlivePingDelay": "00:00:20", "KeepAlivePingTimeout": "00:00:10" }
++    }
++  },
++  "Fleet": {
++    "Agents": {
++      "edge-1": { "Mapping": "127.0.0.1:7001" },
++      "edge-2": { "Mapping": "127.0.0.1:7002" },
++      "edge-3": { "Mapping": "127.0.0.1:7003" }
+     }
+   }
+ }
+diff --git a/app/shared/ControlPlaneChannel.cs b/app/shared/ControlPlaneChannel.cs
+deleted file mode 100644
+index 78d6d58..0000000
+--- a/app/shared/ControlPlaneChannel.cs
++++ /dev/null
+@@ -1,88 +0,0 @@
+-// How an agent reaches the control plane: a TLS channel
+-// to its public endpoint that trusts the fleet's private CA (not the
+-// machine's store) and checks the name the certificate was issued for;
+-// HTTP/2 keepalive pings, because a NAT or firewall drops an idle
+-// connection without telling either side; and a connect timeout, because a
+-// connect to an unreachable host waits out the kernel's SYN retries; and a
+-// CONNECT through the customer site's HTTP proxy where that is the only way
+-// out (grpc-dotnet's own connection logic uses neither HTTPS_PROXY nor the
+-// handler's Proxy, so the tunnel is opened here). The
+-// session's reconnect loop with backoff is common/agent/SessionLoop.cs.
+-using System.Net;
+-using System.Net.Security;
+-using System.Net.Sockets;
+-using System.Text;
+-using System.Security.Authentication;
+-using System.Security.Cryptography.X509Certificates;
+-using Grpc.Net.Client;
+-
+-static class ControlPlaneChannel
+-{
+-    public static GrpcChannel For(IConfiguration cfg)
+-    {
+-        var url = cfg["Url"] ?? throw new ArgumentException("ControlPlane:Url is required");
+-        var ca = new X509Certificate2(cfg["CaCertificate"] ?? throw new ArgumentException("ControlPlane:CaCertificate is required")); // PEM or DER
+-        var serverName = cfg["ServerName"] is { Length: > 0 } n ? n : new Uri(url).Host;
+-        var handler = new SocketsHttpHandler
+-        {
+-            ConnectTimeout = cfg.GetValue("ConnectTimeout", TimeSpan.FromSeconds(10)),
+-            KeepAlivePingDelay = cfg.GetValue("KeepAlivePingDelay", TimeSpan.FromSeconds(20)),
+-            KeepAlivePingTimeout = cfg.GetValue("KeepAlivePingTimeout", TimeSpan.FromSeconds(10)),
+-            KeepAlivePingPolicy = HttpKeepAlivePingPolicy.Always,
+-            PooledConnectionIdleTimeout = Timeout.InfiniteTimeSpan,
+-            EnableMultipleHttp2Connections = true,
+-            SslOptions = new SslClientAuthenticationOptions
+-            {
+-                TargetHost = serverName,
+-                EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+-                RemoteCertificateValidationCallback = (_, cert, _, _) => Trusted(cert, ca, serverName),
+-            },
+-        };
+-        if (cfg["Proxy"] is { Length: > 0 } proxy) // http://host:port
+-            handler.ConnectCallback = (ctx, ct) => ThroughProxy(new Uri(proxy), ctx.DnsEndPoint, ct);
+-        return GrpcChannel.ForAddress(url, new GrpcChannelOptions { HttpHandler = handler });
+-    }
+-
+-    // A TCP connection to target through the proxy's CONNECT; TLS runs inside it.
+-    static async ValueTask<Stream> ThroughProxy(Uri proxy, DnsEndPoint target, CancellationToken ct)
+-    {
+-        var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+-        try
+-        {
+-            await socket.ConnectAsync(proxy.Host, proxy.Port, ct);
+-            var stream = new NetworkStream(socket, ownsSocket: true);
+-            var hostPort = $"{target.Host}:{target.Port}";
+-            await stream.WriteAsync(Encoding.ASCII.GetBytes($"CONNECT {hostPort} HTTP/1.1\r\nHost: {hostPort}\r\n\r\n"), ct);
+-            // The answer, up to its blank line, a byte at a time: what follows is the server's.
+-            var head = new StringBuilder();
+-            var b = new byte[1];
+-            while (!head.ToString().EndsWith("\r\n\r\n"))
+-            {
+-                if (await stream.ReadAsync(b, ct) == 0) throw new IOException("the proxy closed the connection");
+-                head.Append((char)b[0]);
+-            }
+-            var status = head.ToString().Split("\r\n")[0];
+-            if (status.Split(' ') is not [_, "200", ..]) throw new IOException($"proxy: {status}");
+-            return stream;
+-        }
+-        catch
+-        {
+-            socket.Dispose();
+-            throw;
+-        }
+-    }
+-
+-    // The chain must end at the fleet's CA and the certificate must name
+-    // serverName; the platform's own name check is replaced because the URL
+-    // may address the control plane by another name or an IP address.
+-    static bool Trusted(X509Certificate? presented, X509Certificate2 ca, string serverName)
+-    {
+-        if (presented is null) return false;
+-        using var cert = new X509Certificate2(presented);
+-        using var chain = new X509Chain();
+-        chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+-        chain.ChainPolicy.CustomTrustStore.Add(ca);
+-        chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck; // a private CA without a CRL endpoint
+-        return chain.Build(cert) && cert.MatchesHostname(serverName);
+-    }
+-}
+diff --git a/with-nfltr/shared/DialChannel.cs b/with-nfltr/shared/DialChannel.cs
+new file mode 100644
+index 0000000..6cf8c68
+--- /dev/null
++++ b/with-nfltr/shared/DialChannel.cs
+@@ -0,0 +1,84 @@
++// Optional: reach an agent's service with no connect: mapping, one
++// `nfltr cat pipe` child process per HTTP/2 connection (a large or changing fleet).
++using System.Diagnostics;
++using Grpc.Net.Client;
++
++static class DialChannel
++{
++    // Reach <agent>/<service> with no mapping configured: every HTTP/2
++    // connection of the channel is one `nfltr cat pipe` child whose stdin/stdout
++    // are the connection. plain: a plain session (--plain), for a service not
++    // end-to-end encrypted; otherwise an enrolled machine's sessions are in
++    // organisation mode.
++    public static GrpcChannel For(string target, bool plain, string nfltr)
++    {
++        var handler = new SocketsHttpHandler
++        {
++            ConnectCallback = (_, _) => ValueTask.FromResult<Stream>(DialStream.Start(nfltr, target, plain)),
++        };
++        return SidecarChannel.Channel("http://localhost", handler);
++    }
++}
++
++// The stdin/stdout of one `nfltr cat pipe` process as a duplex stream. stderr
++// is JSON lines (open, close, error) and is read so it never blocks dial.
++// The exit code is typed: 3 not_found, 4 refused, 5 unreachable, 7 not
++// in organisation mode, 10 e2ee_client_refused, ...
++// (https://nfltr.xyz/docs); here a failed
++// open surfaces as the gRPC call's UNAVAILABLE.
++sealed class DialStream : Stream
++{
++    readonly Process proc;
++    readonly Stream read, write;
++
++    DialStream(Process proc)
++    {
++        this.proc = proc;
++        read = proc.StandardOutput.BaseStream;
++        write = proc.StandardInput.BaseStream;
++    }
++
++    public static DialStream Start(string nfltr, string target, bool plain)
++    {
++        var psi = new ProcessStartInfo(nfltr)
++        {
++            RedirectStandardInput = true,
++            RedirectStandardOutput = true,
++            RedirectStandardError = true,
++            UseShellExecute = false,
++        };
++        foreach (var a in new[] { "cat", "pipe", target, "--exit-with-parent" }) psi.ArgumentList.Add(a);
++        if (plain) psi.ArgumentList.Add("--plain");
++        var proc = Process.Start(psi)!;
++        if (OperatingSystem.IsWindows()) Job.KillOnClose(proc);
++        proc.ErrorDataReceived += (_, e) => { if (e.Data is { } line) Console.Error.WriteLine($"dial {target}: {line}"); };
++        proc.BeginErrorReadLine();
++        return new DialStream(proc);
++    }
++
++    public override bool CanRead => true;
++    public override bool CanWrite => true;
++    public override bool CanSeek => false;
++    public override int Read(byte[] buffer, int offset, int count) => read.Read(buffer, offset, count);
++    public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default) => read.ReadAsync(buffer, ct);
++    public override void Write(byte[] buffer, int offset, int count) => write.Write(buffer, offset, count);
++    public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken ct = default) => write.WriteAsync(buffer, ct);
++    public override void Flush() => write.Flush();
++    public override Task FlushAsync(CancellationToken ct) => write.FlushAsync(ct);
++
++    protected override void Dispose(bool disposing)
++    {
++        if (disposing)
++        {
++            try { write.Dispose(); } catch (IOException) { } // stdin EOF: dial half-closes and exits
++            try { if (!proc.WaitForExit(2000)) proc.Kill(); } catch (InvalidOperationException) { }
++            proc.Dispose();
++        }
++        base.Dispose(disposing);
++    }
++
++    public override long Length => throw new NotSupportedException();
++    public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
++    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
++    public override void SetLength(long value) => throw new NotSupportedException();
++}
+diff --git a/with-nfltr/shared/Job.cs b/with-nfltr/shared/Job.cs
+new file mode 100644
+index 0000000..9daba1c
+--- /dev/null
++++ b/with-nfltr/shared/Job.cs
+@@ -0,0 +1,75 @@
++// Windows: a child process (an nfltr sidecar or dial) in a Job Object with
++// JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE dies with this process, however this
++// process ends. nfltr's --exit-with-parent covers the same from the child's
++// side. As in connect/csharp/DialClient, with one job for all children.
++using System.Diagnostics;
++using System.Runtime.InteropServices;
++
++static class Job
++{
++    const int JobObjectExtendedLimitInformation = 9;
++    const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
++    static IntPtr handle; // kept open for this process's life; closing it kills the job
++
++    static readonly object mu = new();
++
++    // One job for every child of this process.
++    public static void KillOnClose(Process p)
++    {
++        lock (mu)
++        {
++            if (handle == IntPtr.Zero) handle = Create();
++        }
++        if (!AssignProcessToJobObject(handle, p.Handle))
++            throw new System.ComponentModel.Win32Exception();
++    }
++
++    static IntPtr Create()
++    {
++        var job = CreateJobObject(IntPtr.Zero, null);
++        var info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
++        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
++        int size = Marshal.SizeOf(info);
++        IntPtr ptr = Marshal.AllocHGlobal(size);
++        try
++        {
++            Marshal.StructureToPtr(info, ptr, false);
++            if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, ptr, (uint)size))
++                throw new System.ComponentModel.Win32Exception();
++        }
++        finally { Marshal.FreeHGlobal(ptr); }
++        return job;
++    }
++
++    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
++    static extern IntPtr CreateJobObject(IntPtr attrs, string? name);
++    [DllImport("kernel32.dll", SetLastError = true)]
++    static extern bool SetInformationJobObject(IntPtr job, int infoClass, IntPtr info, uint length);
++    [DllImport("kernel32.dll", SetLastError = true)]
++    static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
++
++    [StructLayout(LayoutKind.Sequential)]
++    struct JOBOBJECT_BASIC_LIMIT_INFORMATION
++    {
++        public long PerProcessUserTimeLimit, PerJobUserTimeLimit;
++        public uint LimitFlags;
++        public UIntPtr MinimumWorkingSetSize, MaximumWorkingSetSize;
++        public uint ActiveProcessLimit;
++        public UIntPtr Affinity;
++        public uint PriorityClass, SchedulingClass;
++    }
++
++    [StructLayout(LayoutKind.Sequential)]
++    struct IO_COUNTERS
++    {
++        public ulong ReadOperationCount, WriteOperationCount, OtherOperationCount, ReadTransferCount, WriteTransferCount, OtherTransferCount;
++    }
++
++    [StructLayout(LayoutKind.Sequential)]
++    struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION
++    {
++        public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
++        public IO_COUNTERS IoInfo;
++        public UIntPtr ProcessMemoryLimit, JobMemoryLimit, PeakProcessMemoryUsed, PeakJobMemoryUsed;
++    }
++}
+diff --git a/with-nfltr/shared/SidecarChannel.cs b/with-nfltr/shared/SidecarChannel.cs
+new file mode 100644
+index 0000000..204474b
+--- /dev/null
++++ b/with-nfltr/shared/SidecarChannel.cs
+@@ -0,0 +1,49 @@
++// How the fleet's gRPC channels reach the nfltr connect sidecar: a
++// channel's target is a local endpoint of the sidecar. Stubs, calls, deadlines and streaming stay as they were.
++using System.IO.Pipes;
++using System.Net.Sockets;
++using Grpc.Net.Client;
++
++static class SidecarChannel
++{
++    // endpoint: "pipe:<name>" (Windows named pipe), "unix:<path>" (unix
++    // socket: Linux, macOS, Windows 10 1803+) or "host:port" (loopback TCP).
++    public static GrpcChannel For(string endpoint)
++    {
++        var handler = new SocketsHttpHandler();
++        if (endpoint.StartsWith("pipe:"))
++        {
++            var name = endpoint["pipe:".Length..];
++            handler.ConnectCallback = async (_, ct) =>
++            {
++                var pipe = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous);
++                await pipe.ConnectAsync(ct);
++                return pipe;
++            };
++            return Channel("http://localhost", handler); // the authority only; the callback connects
++        }
++        if (endpoint.StartsWith("unix:"))
++        {
++            var path = endpoint["unix:".Length..];
++            handler.ConnectCallback = async (_, ct) =>
++            {
++                var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
++                try
++                {
++                    await socket.ConnectAsync(new UnixDomainSocketEndPoint(path), ct);
++                }
++                catch
++                {
++                    socket.Dispose();
++                    throw;
++                }
++                return new NetworkStream(socket, ownsSocket: true);
++            };
++            return Channel("http://localhost", handler);
++        }
++        return Channel("http://" + endpoint, handler);
++    }
++
++    internal static GrpcChannel Channel(string address, SocketsHttpHandler handler) =>
++        GrpcChannel.ForAddress(address, new GrpcChannelOptions { HttpHandler = handler });
++}
+diff --git a/with-nfltr/sidecar/controlplane.yaml b/with-nfltr/sidecar/controlplane.yaml
+new file mode 100644
+index 0000000..cf530d5
+--- /dev/null
++++ b/with-nfltr/sidecar/controlplane.yaml
+@@ -0,0 +1,21 @@
++# The control plane's sidecar: nfltr up -c controlplane.yaml
++# Environment: NFLTR_CONFIG (the config dir holding this machine's relay
++# certificate, from nfltr config login or set-relay --code-file -, and its
++# organisation enrolment: nfltr org join as controlplane, in group
++# controlplane; see MIGRATION.md "Organisation").
++agent: controlplane
++services:
++  # (b) Fleet.Session: the control plane's gRPC server on loopback port
++  # 5000, reachable as controlplane/fleet; every agent's sidecar maps it.
++  # Served only to the organisation's machines of group edge.
++  fleet: { tcp: 5000, e2ee: true, allow_group: [edge] }
++connect:
++  # (a) One local endpoint per agent the control plane calls by name
++  # (<machine>.<agent>/<service>), each session in organisation mode.
++  # A large or changing fleet can use nfltr cat pipe per connection.
++  edge-1: { target: edge-1.edge-1/execute, listen: "127.0.0.1:7001" }
++  edge-2: { target: edge-2.edge-2/execute, listen: "127.0.0.1:7002" }
++  # Not on end-to-end encryption yet (a rollout step): its agent publishes
++  # execute with e2ee: false, so this mapping opens plain sessions.
++  edge-3: { target: edge-3.edge-3/execute, listen: "127.0.0.1:7003", plain: true }
++status: "127.0.0.1:7801"
+diff --git a/with-nfltr/sidecar/edge-agent.yaml b/with-nfltr/sidecar/edge-agent.yaml
+new file mode 100644
+index 0000000..2f371c9
+--- /dev/null
++++ b/with-nfltr/sidecar/edge-agent.yaml
+@@ -0,0 +1,17 @@
++# The sidecar of edge agent edge-1: nfltr up -c edge-agent.yaml
++# One file per agent (provisioning writes the agent's name).
++# Environment: NFLTR_CONFIG (the config dir holding this machine's relay
++# certificate, from nfltr config login or set-relay --code-file -, and its
++# organisation enrolment: nfltr org join as edge-1, in group edge; see
++# MIGRATION.md "Organisation").
++agent: edge-1
++services:
++  # (a) Agent.Execute: the agent's gRPC server on loopback port 50051,
++  # reachable as edge-1.edge-1/execute. No inbound port: the sidecar dials out.
++  # Served only to the organisation's machines of group controlplane.
++  execute: { tcp: 50051, e2ee: true, allow_group: [controlplane] }
++connect:
++  # (b) Fleet.Session: the control plane on a local socket only this user
++  # can open. Windows: listen: "pipe:nfltr-fleet" (named pipe, this user).
++  fleet: { target: controlplane.controlplane/fleet, listen: "unix:/run/nfltr/fleet.sock" }
++status: "unix:/run/nfltr/status.sock"

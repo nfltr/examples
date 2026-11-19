@@ -1,0 +1,9 @@
+# The laptop's stub resolver (CoreDNS): the system asks 127.0.0.1:53
+# over UDP, as every OS resolver does; the stub asks Pi-hole over TCP
+# through the mapping, keeping its connections open between queries.
+.:53 {
+    bind 127.0.0.1
+    forward . 127.0.0.1:5353 {
+        force_tcp
+    }
+}

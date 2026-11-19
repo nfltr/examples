@@ -1,0 +1,48 @@
+# The app on its own network setup (app/), the end-to-end test's machines
+# (scripts/test-dotnet-fleet.sh): the control plane listens on a
+# public TLS port (8443) under the name its certificate was issued for;
+# three edge agents dial it and keep one Fleet.Session each. The agents have
+# no server: commands reach them only over their sessions. edge-2 is at a
+# customer site whose only way out is the site's HTTP proxy (site-b-proxy),
+# which allows CONNECT to the control plane's public port and nothing else;
+# the agent is configured with it (ControlPlane:Proxy). FLEET_TLS: the
+# fleet's CA certificate and the control plane's certificate and key, which
+# the script issues.
+x-image: &image nfltr-dotnet-fleet:app
+x-agent: &agent
+  image: *image
+  working_dir: /app/agent
+  volumes: ["${FLEET_TLS}/ca.crt:/etc/fleet/tls/ca.crt:ro"]
+  depends_on: [controlplane]
+
+services:
+  controlplane:
+    image: *image
+    working_dir: /app/controlplane
+    command: [dotnet, ControlPlane.dll, serve]
+    volumes:
+      - "${FLEET_TLS}/controlplane.crt:/etc/fleet/tls/controlplane.crt:ro"
+      - "${FLEET_TLS}/controlplane.key:/etc/fleet/tls/controlplane.key:ro"
+    networks:
+      default:
+        aliases: [controlplane.fleet.example] # its public DNS name
+
+  edge-1:
+    <<: *agent
+    command: [dotnet, Agent.dll, --Name, edge-1]
+  site-b-proxy: # edge-2's site: CONNECT to the control plane only
+    image: *image
+    command: [/opt/nfltr/siteproxy, -allow, "controlplane.fleet.example:8443"]
+    volumes: ["${FLEET_BIN}:/opt/nfltr:ro"]
+    networks: [default, site-b]
+  edge-2:
+    <<: *agent
+    command: [dotnet, Agent.dll, --Name, edge-2]
+    networks: [site-b]
+    environment: { ControlPlane__Proxy: "http://site-b-proxy:3128" }
+  edge-3:
+    <<: *agent
+    command: [dotnet, Agent.dll, --Name, edge-3]
+
+networks:
+  site-b: { internal: true } # no route out but the proxy

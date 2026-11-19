@@ -1,0 +1,10 @@
+# nfltr up on this server ends the visitors' TLS and hands Traefik
+# plain HTTP on loopback, with the Host it routes on and the visitor's
+# address in X-Forwarded-For (trusted from loopback only). No public
+# address, no certificates.
+entryPoints:
+  web:
+    address: "127.0.0.1:80"
+    forwardedHeaders: { trustedIPs: ["127.0.0.1/32"] }
+providers:
+  file: { directory: /etc/traefik/dynamic, watch: true }

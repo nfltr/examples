@@ -1,0 +1,21 @@
+# The control plane's sidecar: nfltr up -c controlplane.yaml
+# Environment: NFLTR_CONFIG (the config dir holding this machine's relay
+# certificate, from nfltr config login or set-relay --code-file -, and its
+# organisation enrolment: nfltr org join as controlplane, in group
+# controlplane; see MIGRATION.md "Organisation").
+agent: controlplane
+services:
+  # (b) Fleet.Session: the control plane's gRPC server on loopback port
+  # 5000, reachable as controlplane/fleet; every agent's sidecar maps it.
+  # Served only to the organisation's machines of group edge.
+  fleet: { tcp: 5000, e2ee: true, allow_group: [edge] }
+connect:
+  # (a) One local endpoint per agent the control plane calls by name
+  # (<machine>.<agent>/<service>), each session in organisation mode.
+  # A large or changing fleet can use nfltr cat pipe per connection.
+  edge-1: { target: edge-1.edge-1/execute, listen: "127.0.0.1:7001" }
+  edge-2: { target: edge-2.edge-2/execute, listen: "127.0.0.1:7002" }
+  # Not on end-to-end encryption yet (a rollout step): its agent publishes
+  # execute with e2ee: false, so this mapping opens plain sessions.
+  edge-3: { target: edge-3.edge-3/execute, listen: "127.0.0.1:7003", plain: true }
+status: "127.0.0.1:7801"

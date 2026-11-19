@@ -1,0 +1,7 @@
+# The box: nfltr up -c box.yaml. It dials out to the relay and
+# publishes the model server's loopback port as gpu/model, end to end
+# encrypted (the relay carries TLS records only), to the machines of the
+# organisation's group home only (the box enrolled as gpu: nfltr org join).
+agent: gpu
+services:
+  model: { tcp: 11434, e2ee: true, allow_group: [home] }

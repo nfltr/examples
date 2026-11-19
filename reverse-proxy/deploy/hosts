@@ -1,0 +1,3 @@
+# The home names the proxy routes on, for nfltr up on the same
+# server (a line in /etc/hosts, or the home router's DNS).
+127.0.0.1 app.home.arpa admin.home.arpa

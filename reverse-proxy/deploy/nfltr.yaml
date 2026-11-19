@@ -1,0 +1,9 @@
+# nfltr up -c nfltr.yaml on the home server. It dials out to the
+# relay and gives each site an unlisted HTTPS link. TLS ends here (the
+# relay forwards bytes it cannot read); nfltr up then hands each request
+# to the proxy on loopback with the site's home name as Host
+# (host_header: rewrite), the link's name in X-Forwarded-Host and the
+# visitor's address in X-Forwarded-For.
+services:
+  app-site: { http: "http://app.home.arpa", host_header: rewrite }
+  admin-site: { http: "http://admin.home.arpa", host_header: rewrite }

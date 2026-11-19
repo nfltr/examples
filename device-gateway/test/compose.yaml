@@ -1,0 +1,52 @@
+# The example's machines (scripts/test-device-gateway.sh, README.md).
+# device: the small device (device/main.go), on the LAN only, with no nfltr.
+# gateway: the Linux box on the same LAN running nfltr up -c gateway.yaml,
+# and on the outside network, where it dials the relay. relay: a private
+# relay. client: an operator's machine outside the LAN, holding three nfltr
+# configs (ops: group ops; eve: group guest; none: no certificate). Both
+# networks are internal: nothing reaches the internet, and the client has
+# no route to the LAN.
+# DG_BIN: linux binaries. DG_RUN: the run's files (gateway/, client/).
+x-base: &base
+  image: ${DG_IMAGE}
+  init: true
+x-nfltr: &nfltr
+  <<: *base
+  env_file: [../gateway/relay.env]
+
+networks:
+  lan:
+    internal: true
+    ipam: { config: [{ subnet: 10.247.1.0/24 }] }
+  outside:
+    internal: true
+    ipam: { config: [{ subnet: 10.247.2.0/24 }] }
+
+services:
+  device:
+    <<: *base
+    volumes: ["${DG_BIN}:/opt/dg:ro"]
+    networks: { lan: { ipv4_address: 10.247.1.50 } }
+    command: [/opt/dg/device, serve]
+  relay:
+    <<: *base
+    volumes: ["${DG_BIN}:/opt/dg:ro"]
+    networks: { outside: { ipv4_address: 10.247.2.10 } }
+    command: [/opt/dg/nfltr-relay, serve, --data-dir, /var/lib/relay, --tls-self-signed, --tls-name, relay, --agent-rate-limit, "0"]
+    environment:
+      TCP_ENABLED: "true"
+      RATELIMIT_ENABLE: "false"
+      NF1_ENABLED: "true" # capability addresses (ui-link); the hosted relay serves them
+      NF1_HOSTS: "relay:8444" # the relay host an address names
+  gateway:
+    <<: *nfltr
+    networks: [lan, outside]
+    volumes: ["${DG_BIN}:/opt/dg:ro", "${DG_RUN}/gateway:/run/dg", "../gateway:/opt/dg-cfg:ro"]
+    environment: { NFLTR_CONFIG: /run/dg/nfltr.json }
+    command: [/opt/dg/nfltr, up, -c, /opt/dg-cfg/gateway.yaml]
+  client:
+    <<: *nfltr
+    networks: [outside]
+    volumes: ["${DG_BIN}:/opt/dg:ro", "${DG_RUN}/client:/run/dg"]
+    environment: { NFLTR_CONFIG: /run/dg/ops/nfltr.json }
+    command: [tail, -f, /dev/null]

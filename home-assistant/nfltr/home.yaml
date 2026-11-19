@@ -1,0 +1,7 @@
+# nfltr up -c home.yaml on the home machine. It dials out to the
+# relay and gives Home Assistant an unlisted HTTPS link; TLS ends here on
+# the home machine (verified mode), so the relay forwards bytes it cannot
+# read. Home Assistant's own login guards it.
+agent: home
+services:
+  ha: { http: 8123 }

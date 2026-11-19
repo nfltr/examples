@@ -1,0 +1,99 @@
+# The example's machines (scripts/test-pihole.sh, README.md).
+# box: the Pi-hole machine on the home network (out through the router
+# only, no way in). router: the home router,
+# NAT out, 10 ms each way between home and the outside (tc netem). laptop:
+# a machine elsewhere. internet: the DNS Pi-hole forwards to (a stand-in,
+# test/internet.Corefile). Programs run in their machine's network
+# namespace (network_mode: service:box|laptop), so one can be killed and
+# started without the machine's network. relay: a private relay outside;
+# box-agent, laptop-agent: nfltr up on each machine; laptop-stub: the
+# laptop's stub resolver (deploy/).
+# PH_BIN: linux binaries. PH_PROV: the provisioned files, box/ and laptop/.
+x-base: &base
+  image: ${PH_IMAGE}
+  init: true
+  volumes: ["${PH_BIN}:/opt/ph:ro"]
+
+networks:
+  home: # not internal: Docker drops an internal network's packets to or from other subnets, so the router could not route it
+    ipam: { config: [{ subnet: 10.233.1.0/24 }] }
+  outside:
+    ipam: { config: [{ subnet: 10.233.2.0/24 }] }
+
+services:
+  router:
+    <<: *base
+    cap_add: [NET_ADMIN]
+    sysctls: { net.ipv4.ip_forward: "1" }
+    networks:
+      home: { ipv4_address: 10.233.1.2 }
+      outside: { ipv4_address: 10.233.2.2 }
+    command:
+      - sh
+      - -euc
+      - |
+        out=$$(ip -o -4 addr show | awk '/ 10\.233\.2\.2\//{print $$2}')
+        in=$$(ip -o -4 addr show | awk '/ 10\.233\.1\.2\//{print $$2}')
+        iptables -t nat -A POSTROUTING -o "$$out" -j MASQUERADE
+        iptables -P FORWARD DROP
+        iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+        iptables -A FORWARD -s 10.233.1.0/24 -o "$$out" -j ACCEPT
+        tc qdisc add dev "$$out" root netem delay 10ms
+        tc qdisc add dev "$$in" root netem delay 10ms
+        touch /tmp/ready
+        exec tail -f /dev/null
+  box:
+    <<: *base
+    cap_add: [NET_ADMIN]
+    networks: { home: { ipv4_address: 10.233.1.10 } }
+    dns: [10.233.2.53] # the box's resolver before Pi-hole runs (gravity looks a name up first)
+    # Out through the router only; new connections on the home network from
+    # anywhere but the router dropped (the Docker host would otherwise route
+    # to it).
+    command:
+      - sh
+      - -euc
+      - |
+        ip route replace default via 10.233.1.2
+        iptables -A INPUT -m conntrack --ctstate NEW -i eth+ ! -s 10.233.1.2 -j DROP
+        touch /tmp/ready
+        exec tail -f /dev/null
+  laptop:
+    <<: *base
+    volumes: ["${PH_BIN}:/opt/ph:ro", "${PH_PROV}/laptop:/run/ph:ro"]
+    networks: { outside: { ipv4_address: 10.233.2.20 } }
+    command: [tail, -f, /dev/null]
+  internet:
+    image: coredns/coredns:1.15.0@sha256:0a9d8c8ddf34347eb59aad9a8784f0710de88d6d112726d11d271f9bc6daca26
+    networks: { outside: { ipv4_address: 10.233.2.53 } }
+    volumes: ["./internet.Corefile:/Corefile:ro"]
+    command: [-conf, /Corefile]
+  pihole:
+    image: pihole/pihole:2026.10.1@sha256:30f803ad5dd60ff96cc0a63008a2e9271af481c1b0399a182192b2e91152c1f9
+    network_mode: service:box
+    env_file: ["${PH_PROV}/box/pihole.env"]
+    environment: { TZ: UTC, FTLCONF_dns_upstreams: 10.233.2.53 }
+    volumes: ["../pihole/adlists.list:/etc/pihole/adlists.list", "../pihole/blocklist.txt:/etc/pihole-lists/blocklist.txt:ro"]
+
+  relay:
+    <<: *base
+    networks: { outside: { ipv4_address: 10.233.2.10 } }
+    command: [/opt/ph/nfltr-relay, serve, --data-dir, /var/lib/relay, --tls-self-signed, --tls-name, relay, --agent-rate-limit, "0"]
+    environment: { TCP_ENABLED: "true", RATELIMIT_ENABLE: "false" }
+  box-agent:
+    <<: *base
+    network_mode: service:box
+    volumes: ["${PH_BIN}:/opt/ph:ro", "${PH_PROV}/box:/run/ph", "../deploy:/opt/ph-cfg:ro"]
+    env_file: [../deploy/relay.env, ../deploy/box.env]
+    command: [/opt/ph/nfltr, up, -c, /opt/ph-cfg/box.yaml]
+  laptop-agent:
+    <<: *base
+    network_mode: service:laptop
+    volumes: ["${PH_BIN}:/opt/ph:ro", "${PH_PROV}/laptop:/run/ph", "../deploy:/opt/ph-cfg:ro"]
+    env_file: [../deploy/relay.env, ../deploy/laptop.env]
+    command: [/opt/ph/nfltr, up, -c, /opt/ph-cfg/laptop.yaml]
+  laptop-stub:
+    image: coredns/coredns:1.15.0@sha256:0a9d8c8ddf34347eb59aad9a8784f0710de88d6d112726d11d271f9bc6daca26
+    network_mode: service:laptop
+    volumes: ["../deploy/Corefile:/Corefile:ro"]
+    command: [-conf, /Corefile]
