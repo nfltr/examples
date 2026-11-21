@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/logo.svg" width="96" alt="nfltr"></p>
+
 # nfltr examples
 
 Working examples of [nfltr](https://nfltr.xyz): each one a setup you can
@@ -22,7 +24,7 @@ command fetches it).
 ```bash
 make gpu-box                    # one example
 make check                      # go vet and build, then every example
-NFLTR_VERSION=v2.1.71 make pihole   # against a given release (default: the latest)
+NFLTR_VERSION=vX.Y.Z make pihole   # against a given release (default: the latest)
 ```
 
 Each test fetches the released binaries for Linux through

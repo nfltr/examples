@@ -114,7 +114,7 @@ Measured per open: 62470 bytes (WebSocket session: auth, states, config, service
 ## Limits
 
 - A link ends after a day without a visit (the relay's share lifetime:
-  24 hours on nfltr.xyz; a self-hosted relay's `HTTP_SHARE_TTL`). Each
+  24 hours on nfltr.xyz; your own relay's `HTTP_SHARE_TTL`). Each
   visit starts that day again, so a link in use keeps its URL across
   restarts of `nfltr up` and of the relay; one nobody opened for a day
   stops answering, `nfltr up` logs it and lists it `expired` in its

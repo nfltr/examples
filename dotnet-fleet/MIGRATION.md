@@ -215,7 +215,7 @@ behind NAT); and an agent that starts and owns its sidecar
 | the control plane calls an agent by name (a) | no (UNIMPLEMENTED, checked) | yes, by mapping or `nfltr cat pipe` |
 | `docker compose up` to the first ok command on every agent, one run (with nfltr: the relay already up) | 3183 ms | 3596 ms |
 
-Listeners: read from `/proc/net/tcp` and `/proc/net/tcp6` of each fleet machine while it ran (with nfltr, the machines include their sidecars). The relay is not a fleet machine and is not counted: hosted, it is not the organization's to run; self-hosted, it is one public endpoint for every fleet of the account.
+Listeners: read from `/proc/net/tcp` and `/proc/net/tcp6` of each fleet machine while it ran (with nfltr, the machines include their sidecars). The relay is not a fleet machine and is not counted: hosted, it is not the organization's to run; on the organization's own relay, it is one public endpoint for every fleet of the account.
 <!-- END generated: moving-parts -->
 
 - **No inbound port.** No fleet machine accepts a connection from the
