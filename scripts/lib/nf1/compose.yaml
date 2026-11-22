@@ -1,0 +1,56 @@
+# The address examples' machines (scripts/lib/nf1.sh). relay: a private relay
+# (the stand-in for the hosted one), the only machine on both networks.
+# machine-a: the serving machine (an account); its programs run in its
+# network namespace (network_mode: service:machine-a): the service on
+# loopback, and a (nfltr cat serve, set by the example). machine-b: the
+# other machine (no account; no route to A); b is its nfltr cat forward,
+# and the example's client runs there too.
+# NF1_IMAGE: the example's image (test/Dockerfile). NF1_BIN: the released
+# linux binaries. NF1_RUN: each machine's files (HOME, the address file).
+# B's nfltr knows no relay: the address names it (and the relay's TLS
+# certificate, self-signed here, is pinned by NFLTR_RELAY_CERT_SHA256).
+x-machine: &machine
+  image: ${NF1_IMAGE}
+  init: true
+  environment:
+    HOME: /run/nf1
+    NFLTR_RELAY_CERT_SHA256: ${NF1_PIN:-}
+x-machine-a: &machine-a
+  <<: *machine
+  environment:
+    HOME: /run/nf1
+    NFLTR_SERVER: relay:8443
+    HTTP_SERVER_ADDR: https://relay:8444
+    RPC_TLS: "true"
+    NFLTR_RELAY_CERT_SHA256: ${NF1_PIN:-}
+
+networks:
+  side-a: {}
+  side-b: {}
+
+services:
+  relay:
+    image: ${NF1_IMAGE}
+    init: true
+    networks: [side-a, side-b]
+    volumes: ["${NF1_BIN}:/opt/nf1:ro"]
+    command: [/opt/nf1/nfltr-relay, serve, --data-dir, /var/lib/relay, --tls-self-signed, --tls-name, relay, --agent-rate-limit, "0"]
+    environment: { TCP_ENABLED: "true", RATELIMIT_ENABLED: "false" }
+  machine-a:
+    <<: *machine-a
+    networks: [side-a]
+    volumes: ["${NF1_BIN}:/opt/nf1:ro", "${NF1_RUN}/a:/run/nf1"]
+    command: [tail, -f, /dev/null]
+  machine-b:
+    <<: *machine
+    networks: [side-b]
+    volumes: ["${NF1_BIN}:/opt/nf1:ro", "${NF1_RUN}/b:/run/nf1"]
+    command: [tail, -f, /dev/null]
+  a: # nfltr cat serve: the example sets command
+    <<: *machine-a
+    network_mode: service:machine-a
+    volumes: ["${NF1_BIN}:/opt/nf1:ro", "${NF1_RUN}/a:/run/nf1"]
+  b: # nfltr cat forward: the example sets command
+    <<: *machine
+    network_mode: service:machine-b
+    volumes: ["${NF1_BIN}:/opt/nf1:ro", "${NF1_RUN}/b:/run/nf1"]

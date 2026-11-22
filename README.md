@@ -16,6 +16,21 @@ copy, with an end-to-end test that runs it in containers against the
 | [reverse-proxy](reverse-proxy/) | Caddy or Traefik serving the public through `nfltr up` | `make reverse-proxy` |
 | [connect](connect/) | Python and .NET clients of the connect sidecar | — |
 
+### One service for whoever holds its address
+
+An nf1 address opens one service of a machine to whoever holds the address
+file (mode 0600): the other machine needs `nfltr` and no account, the
+session is end to end encrypted, and `--new-address` revokes it
+(https://nfltr.xyz/docs).
+
+| Example | What it shows | Test |
+|---|---|---|
+| [browser-terminal](browser-terminal/) | A `tmux` session in another computer's browser (ttyd, its own password as a second lock); revoking the address | `make browser-terminal` |
+| [remote-desktop](remote-desktop/) | A desktop in a VNC viewer on another machine | `make remote-desktop` |
+| [shared-database](shared-database/) | Postgres for a colleague's `psql` | `make shared-database` |
+| [camera-stream](camera-stream/) | An RTSP camera's stream, played with ffmpeg's tools | `make camera-stream` |
+| [udp-service](udp-service/) | A UDP game server for friends | `make udp-service` |
+
 ## Running the tests
 
 Needs Docker, openssl, python3 and Go (the version in `go.mod`; the go

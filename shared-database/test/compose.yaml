@@ -1,0 +1,16 @@
+# scripts/test-shared-database.sh, on scripts/lib/nf1/compose.yaml's machines.
+# postgres: Postgres 17 (the official image, by digest) on A's loopback
+# only, its password PGPASSWORD, a password asked of every TCP client
+# (../postgres/pg_hba.conf). a: nfltr cat serve under an address, as
+# agent db-box. b: nfltr cat forward on B's 127.0.0.1:15432.
+services:
+  postgres:
+    image: postgres:17-alpine@sha256:f9cf3e1f0066f0eb0c48707d864f0ac5941e9ff454a072077d97a4d278d07d73
+    network_mode: service:machine-a
+    environment: { POSTGRES_PASSWORD: "${PGPASSWORD:-}" }
+    volumes: ["${NF1_EX}/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro"]
+    command: [postgres, -c, listen_addresses=127.0.0.1, -c, hba_file=/etc/postgresql/pg_hba.conf]
+  a:
+    command: /opt/nf1/nfltr cat serve db --forward 127.0.0.1:5432 --agent db-box --address --address-file /run/nf1/db.addr
+  b:
+    command: /opt/nf1/nfltr cat forward --address-file /run/nf1/db.addr --listen 127.0.0.1:15432

@@ -1,0 +1,23 @@
+# scripts/test-remote-desktop.sh, on scripts/lib/nf1/compose.yaml's machines.
+# desktop: a 1024x640 X display with an xterm, shared by x11vnc on A's
+# loopback only (-localhost), its password VNC_PASSWORD. a: nfltr cat
+# serve under an address, as agent desk. b: nfltr cat forward on B's
+# 127.0.0.1:15900.
+services:
+  desktop:
+    image: ${NF1_IMAGE}
+    init: true
+    network_mode: service:machine-a
+    environment: { VNC_PASSWORD: "${VNC_PASSWORD:-}" }
+    command:
+      - sh
+      - -euc
+      - |
+        Xvfb :0 -screen 0 1024x640x24 &
+        sleep 1
+        DISPLAY=:0 xterm -geometry 100x30+40+40 -fa DejaVuSansMono -fs 14 -e sh -c 'echo "desktop on machine A"; exec sh' &
+        exec x11vnc -display :0 -localhost -forever -shared -rfbport 5900 -passwd "$$VNC_PASSWORD" -desktop "machine A" -quiet
+  a:
+    command: /opt/nf1/nfltr cat serve desktop --forward 127.0.0.1:5900 --agent desk --address --address-file /run/nf1/desktop.addr
+  b:
+    command: /opt/nf1/nfltr cat forward --address-file /run/nf1/desktop.addr --listen 127.0.0.1:15900

@@ -1,0 +1,30 @@
+# scripts/test-camera-stream.sh, on scripts/lib/nf1/compose.yaml's machines.
+# camera: the stand-in for an IP camera on A: MediaMTX serving RTSP on A's
+# loopback only (port 8554; RTSP over TCP, every other protocol off) and
+# ffmpeg publishing a 640x360 H.264 test pattern to it as /stream.
+# a: nfltr cat serve under an address, as agent camera-box. b: nfltr cat
+# forward on B's 127.0.0.1:18554.
+services:
+  camera:
+    image: ${NF1_IMAGE}
+    init: true
+    network_mode: service:machine-a
+    environment:
+      MTX_RTSPADDRESS: 127.0.0.1:8554
+      MTX_RTSPTRANSPORTS: tcp
+      MTX_RTMP: "no"
+      MTX_HLS: "no"
+      MTX_WEBRTC: "no"
+      MTX_SRT: "no"
+    command:
+      - sh
+      - -euc
+      - |
+        /mediamtx &
+        sleep 1
+        exec ffmpeg -hide_banner -loglevel error -re -f lavfi -i testsrc=size=640x360:rate=15 \
+          -c:v libx264 -preset ultrafast -tune zerolatency -g 15 -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:8554/stream
+  a:
+    command: /opt/nf1/nfltr cat serve camera --forward 127.0.0.1:8554 --agent camera-box --address --address-file /run/nf1/camera.addr
+  b:
+    command: /opt/nf1/nfltr cat forward --address-file /run/nf1/camera.addr --listen 127.0.0.1:18554

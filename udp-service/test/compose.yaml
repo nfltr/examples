@@ -1,0 +1,14 @@
+# scripts/test-udp-service.sh, on scripts/lib/nf1/compose.yaml's machines.
+# echo: the UDP service on A's loopback (a stand-in for a game server: every
+# datagram answered). a: nfltr cat serve --udp under an address. b: nfltr
+# cat forward --udp on B's 127.0.0.1:27015.
+services:
+  echo:
+    image: ${NF1_IMAGE}
+    init: true
+    network_mode: service:machine-a
+    command: [socat, "UDP4-RECVFROM:27015,bind=127.0.0.1,fork", 'SYSTEM:read l; echo "server on A got: $$l"']
+  a:
+    command: /opt/nf1/nfltr cat serve game --udp --forward 127.0.0.1:27015 --address --address-file /run/nf1/game.addr
+  b:
+    command: /opt/nf1/nfltr cat forward --udp --address-file /run/nf1/game.addr --listen udp:127.0.0.1:27015

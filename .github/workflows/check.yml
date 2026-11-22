@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        example: [device-gateway, dotnet-fleet, gpu-box, home-assistant, pihole, reverse-proxy]
+        example: [browser-terminal, camera-stream, device-gateway, dotnet-fleet, gpu-box, home-assistant, pihole, remote-desktop, reverse-proxy, shared-database, udp-service]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6

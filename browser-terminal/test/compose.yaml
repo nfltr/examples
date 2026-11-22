@@ -1,0 +1,16 @@
+# scripts/test-browser-terminal.sh, on scripts/lib/nf1/compose.yaml's machines.
+# terminal: a tmux session on A and ttyd in front of it, on A's loopback
+# only, with its own user and password (TTYD_CREDENTIAL, user:password).
+# a: nfltr cat serve under an address (NF1_NEW_ADDRESS=--new-address mints
+# a new one). b: nfltr cat forward on B's 127.0.0.1:7681.
+services:
+  terminal:
+    image: ${NF1_IMAGE}
+    init: true
+    network_mode: service:machine-a
+    environment: { TTYD_CREDENTIAL: "${TTYD_CREDENTIAL:-}" }
+    command: [sh, -euc, 'tmux new -d -s main sh; exec ttyd -W -i 127.0.0.1 -p 7681 -c "$$TTYD_CREDENTIAL" tmux attach -t main']
+  a:
+    command: /opt/nf1/nfltr cat serve terminal --forward 127.0.0.1:7681 --address --address-file /run/nf1/terminal.addr ${NF1_NEW_ADDRESS:-}
+  b:
+    command: /opt/nf1/nfltr cat forward --address-file /run/nf1/terminal.addr --listen 127.0.0.1:7681
