@@ -70,7 +70,7 @@ services:
     command: [/opt/ha/nfltr-relay, serve, --data-dir, /var/lib/relay, --tls-self-signed, --tls-name, relay, --agent-rate-limit, "0"]
     environment:
       TCP_ENABLED: "true"
-      RATELIMIT_ENABLE: "false"
+      RATELIMIT_ENABLED: "false"
       HTTP_SHARE_DOMAIN: share.test
       E2EE_TLS_PASSTHROUGH_ENABLED: "true"
       E2EE_TLS_PASSTHROUGH_BASE_DOMAIN: share.test

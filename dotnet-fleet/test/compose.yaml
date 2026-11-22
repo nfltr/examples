@@ -24,7 +24,7 @@ services:
   relay:
     image: *image
     command: [/opt/nfltr/nfltr-relay, serve, --data-dir, /var/lib/relay, --tls-self-signed, --tls-name, relay, --agent-rate-limit, "0"]
-    environment: { TCP_ENABLED: "true", RATELIMIT_ENABLE: "false" }
+    environment: { TCP_ENABLED: "true", RATELIMIT_ENABLED: "false" }
     volumes: ["${FLEET_BIN}:/opt/nfltr:ro"]
 
   controlplane-sidecar:

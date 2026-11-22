@@ -77,7 +77,7 @@ services:
     networks: { internet: { ipv4_address: 10.234.2.10 } }
     command: [/opt/rp/nfltr-relay, serve, --data-dir, /var/lib/relay, --tls-self-signed, --tls-name, relay, --agent-rate-limit, "0"]
     environment:
-      RATELIMIT_ENABLE: "false"
+      RATELIMIT_ENABLED: "false"
       HTTP_SHARE_DOMAIN: share.test
       E2EE_TLS_PASSTHROUGH_ENABLED: "true"
       E2EE_TLS_PASSTHROUGH_BASE_DOMAIN: share.test

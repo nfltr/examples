@@ -79,7 +79,7 @@ services:
     <<: *base
     networks: { outside: { ipv4_address: 10.233.2.10 } }
     command: [/opt/ph/nfltr-relay, serve, --data-dir, /var/lib/relay, --tls-self-signed, --tls-name, relay, --agent-rate-limit, "0"]
-    environment: { TCP_ENABLED: "true", RATELIMIT_ENABLE: "false" }
+    environment: { TCP_ENABLED: "true", RATELIMIT_ENABLED: "false" }
   box-agent:
     <<: *base
     network_mode: service:box

@@ -35,7 +35,7 @@ services:
     command: [/opt/dg/nfltr-relay, serve, --data-dir, /var/lib/relay, --tls-self-signed, --tls-name, relay, --agent-rate-limit, "0"]
     environment:
       TCP_ENABLED: "true"
-      RATELIMIT_ENABLE: "false"
+      RATELIMIT_ENABLED: "false"
       NF1_ENABLED: "true" # capability addresses (ui-link); the hosted relay serves them
       NF1_HOSTS: "relay:8444" # the relay host an address names
   gateway:

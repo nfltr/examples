@@ -16,12 +16,14 @@
 # ENROL_ACCOUNT (default admin) is the account the machine joins; empty: its
 # own account. An account is its first machine: until a machine of
 # that name exists, the relay refuses codes for it, so enrol first enrols
-# CMD as that machine (its own account) and then as NAME: the account's
-# root stays in the key file, CMD ends up NAME. A harness that redeems the
-# data dir's admin-enrol-code first needs none of this.
+# CMD as that machine (its own account) and then as NAME (CMD with
+# --replace: nfltr config set-relay does not enrol over a good certificate
+# without it): the account's root stays in the key file, CMD ends up NAME.
+# A harness that redeems the data dir's admin-enrol-code first needs none
+# of this.
 
 enrol() { # NAME CMD...
-	local name="$1" acct="${ENROL_ACCOUNT-admin}" code err
+	local name="$1" acct="${ENROL_ACCOUNT-admin}" code err replace=""
 	shift
 	err="$(mktemp)" # codegen's stderr: its note on success, the refusal's reason
 	# A relay logs its fingerprint before its key file and machine CA exist:
@@ -31,7 +33,7 @@ enrol() { # NAME CMD...
 			code="$(enrol_codegen --name "${name}" --account "${acct}" 2>"${err}")" || {
 				# no machine roots the account yet: CMD enrols as its root first
 				grep -q "no such machine in the key file" "${err}" && [[ "${name}" != "${acct}" ]] &&
-					ENROL_ACCOUNT="" enrol "${acct}" "$@" && continue
+					ENROL_ACCOUNT="" enrol "${acct}" "$@" && replace=--replace && continue
 				code=""
 			}
 		else
@@ -42,7 +44,7 @@ enrol() { # NAME CMD...
 	done
 	rm -f "${err}"
 	[[ "${code}" == enr_* ]] || { echo "enrol: no enrolment code for machine ${name}" >&2; return 1; }
-	printf '%s\n' "${code}" | "$@" >/dev/null || { echo "enrol: machine ${name} did not enrol" >&2; return 1; }
+	printf '%s\n' "${code}" | "$@" ${replace} >/dev/null || { echo "enrol: machine ${name} did not enrol" >&2; return 1; }
 }
 
 enrol_id() { # machine.json on stdin: the relay machine id it was enrolled as
